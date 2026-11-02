@@ -1,0 +1,45 @@
+# === CMake 編譯產物 ===
+build/
+build-*/
+cmake-build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+Testing/
+Makefile
+*.cmake
+
+# 但保留 CMakeLists.txt 與自訂 .cmake 模組
+!CMakeLists.txt
+!*.cmake.in
+
+# === 編譯產物 ===
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# === IDE / 編輯器 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# === 其他 ===
+*.log
