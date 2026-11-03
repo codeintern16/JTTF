@@ -14,8 +14,10 @@ Warp tracks your most used directories and uses a **Frecency (Frequency + Recenc
 Clone the repository and build from source:
 
 ```bash
-git clone [https://github.com/codeintern16/JTTF.git](https://github.com/codeintern16/JTTF.git)
-cd warp/build
+git clone https://github.com/codeintern16/JTTF.git
+cd JTTF
+mkdir -p build
+cd build
 cmake ..
 make
 sudo make install
