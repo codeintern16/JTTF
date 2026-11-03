@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(warp)
+project(JTTF)
 
 # 使用 C++17 標準
 set(CMAKE_CXX_STANDARD 17)
@@ -16,4 +16,4 @@ add_executable(warp src/main.cpp src/side.cpp)
 install(TARGETS warp DESTINATION bin)
 
 # 2. 把 Bash 腳本安裝到 /usr/local/share/warp (系統共享資源區)
-install(FILES scripts/warp.sh DESTINATION share/war)
+install(FILES scripts/warp.sh DESTINATION share/warp)
