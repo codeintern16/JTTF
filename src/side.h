@@ -8,7 +8,8 @@ struct Record {
     long long timestamp;
 };
 
-bool isFuzzyMatch(const std::string& query, const std::string& path);
-std::string searchFallback(std::string query);
+int getFuzzyScore(const std::string& query, const std::string& path);
+std::string searchFallback(const std::string& query);
 std::vector<Record> loadFrecencyHistory();
+bool saveFrecencyHistory(const std::vector<Record>& records);
 void addOrUpdateHistory(const std::string& path);

@@ -13,11 +13,16 @@ CTestTestfile.cmake
 _deps/
 Testing/
 Makefile
-*.cmake
 
-# 但保留 CMakeLists.txt 與自訂 .cmake 模組
+# 自訂 .cmake 模組不要被忽略（視情況決定是否保留 *.cmake 那行）
+!cmake/*.cmake
 !CMakeLists.txt
 !*.cmake.in
+
+# === Rust / Cargo ===
+target/
+**/*.rs.bk
+*.pdb
 
 # === 編譯產物 ===
 *.o

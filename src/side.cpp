@@ -1,98 +1,116 @@
 #include "side.h"
-#include <filesystem>
-#include <iostream>
-#include <fstream>
-#include <chrono> // 處理 UNIX 時間
-#include <cctype>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
+#include <cerrno>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 using namespace std;
-namespace fs = filesystem;
+namespace fs = std::filesystem;
 
-// 1. 模糊匹配演算法 (修正過度匹配問題)
-bool isFuzzyMatch(const std::string& query, const std::string& path) {
-    if (query.empty()) return true;
-
-    // 【修復核心】：把 "/home/tux/Downloads/fakegroup1"
-    // 截斷成只剩 "fakegroup1" 再進行比對
-    std::string basename = fs::path(path).filename().string();
-
-    size_t q_idx = 0;
-    for (char c : basename) {
-        if (std::tolower(c) == std::tolower(query[q_idx])) {
-            q_idx++;
-            // 如果 query 的字元都找完了，代表匹配成功
-            if (q_idx == query.length()) return true;
-        }
-    }
-    return false;
+// 取得歷史檔路徑；HOME 不存在時回傳空字串
+static string historyPath() {
+    const char* home = getenv("HOME");
+    if (!home || !*home) return "";
+    return string(home) + "/.warp_history";
 }
 
-// 2. 備用方案：動態決定掃描根目錄或家目錄
-std::string searchFallback(std::string query) {
-    string search_root;
-
-    // 【實作你的邏輯】：有 / 開頭從根目錄找，否則從家目錄找
-    if (!query.empty() && query[0] == '/') {
-        search_root = "/";
-        query = query.substr(1); // 拔掉斜線，用剩下的字眼去模糊匹配
-    } else {
-        const char* home_dir = getenv("HOME");
-        search_root = home_dir ? home_dir : "/";
-    }
-
-    auto options = fs::directory_options::skip_permission_denied;
-    string best_match = "";
-
-    try {
-        for (auto it = fs::recursive_directory_iterator(search_root, options);
-             it != fs::recursive_directory_iterator(); ++it) {
-
-            string current_path = it->path().string();
-            string filename = it->path().filename().string();
-
-            // 【OS 陷阱防護】：如果是掃描根目錄，絕對要剪枝 (Pruning) 避開虛擬檔案系統
-            if (search_root == "/") {
-                if (current_path == "/proc" || current_path == "/sys" ||
-                    current_path == "/dev" || current_path == "/run" || current_path == "/mnt") {
-                    it.disable_recursion_pending();
-                    continue;
-                }
-            }
-
-            // 略過隱藏資料夾，加快掃描速度
-            if (filename[0] == '.') {
-                it.disable_recursion_pending();
-                continue;
-            }
-
-            if (it->is_directory()) {
-                if (isFuzzyMatch(query, filename)) {
-                    best_match = current_path;
-                    break;
-                }
-            }
-        }
-    } catch (...) {}
-
-    return best_match;
+// 1. 模糊匹配演算法
+extern "C" {
+    int get_fuzzy_score_rs(const char* query, const char* path);
 }
 
-// 取得 UNIX 時間 (秒)
+int getFuzzyScore(const std::string& query, const std::string& path) {
+    return get_fuzzy_score_rs(query.c_str(), path.c_str());
+}
+
+// 2. 呼叫外部 fd 進行全域掃描（fork + exec，不經過 shell，無 injection 風險）
+string searchFallback(const string& query) {
+    const char* home = getenv("HOME");
+    if (!home || !*home) return "";
+
+    int fds[2];
+    if (pipe(fds) != 0) return "";
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return "";
+    }
+
+    if (pid == 0) {  // 子行程
+        close(fds[0]);
+        dup2(fds[1], STDOUT_FILENO);
+        close(fds[1]);
+
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+
+        // "--" 避免 query 以 '-' 開頭時被當成選項
+        execlp("fd", "fd", "-t", "d", "-H", "-E", ".git",
+               "-c", "never", "-1", "--", query.c_str(), home,
+               static_cast<char*>(nullptr));
+        _exit(127);  // exec 失敗（通常是找不到 fd）
+    }
+
+    // 父行程：讀取子行程輸出
+    close(fds[1]);
+    string result;
+    array<char, 256> buffer;
+    while (true) {
+        ssize_t n = read(fds[0], buffer.data(), buffer.size());
+        if (n > 0) {
+            result.append(buffer.data(), static_cast<size_t>(n));
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+    close(fds[0]);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+        cerr << "[Warp Error] 找不到 'fd' 指令！請先執行: sudo pacman -S fd\n";
+        return "";
+    }
+
+    if (!result.empty() && result.back() == '\n') result.pop_back();
+    return result;
+}
+
+// 3. 取得 UNIX 時間 (秒)
 long long getCurrentTime() {
     return chrono::duration_cast<chrono::seconds>(
         chrono::system_clock::now().time_since_epoch()).count();
 }
 
-// 3. 載入並反序列化歷史紀錄
+// 4. 載入並反序列化歷史紀錄
 vector<Record> loadFrecencyHistory() {
     vector<Record> records;
-    const char* home_dir = getenv("HOME");
-    if (!home_dir) return records;
+    string hist = historyPath();
+    if (hist.empty()) return records;
 
-    ifstream file(string(home_dir) + "/.warp_history");
+    ifstream file(hist);
     string line;
 
-    // 預期格式: /home/tux/ctf|15.5|1730547960
     while (getline(file, line)) {
         size_t pos1 = line.find('|');
         size_t pos2 = line.rfind('|');
@@ -103,19 +121,52 @@ vector<Record> loadFrecencyHistory() {
                 r.score = stod(line.substr(pos1 + 1, pos2 - pos1 - 1));
                 r.timestamp = stoll(line.substr(pos2 + 1));
                 records.push_back(r);
-            } catch (...) {} // 略過壞掉的紀錄
+            } catch (...) {}
         }
     }
     return records;
 }
 
-// 4. 更新分數、老化衰減、寫回檔案 (Cache Replacement & Pruning)
+// 5. 原子寫入歷史檔（先寫暫存檔，再 rename 覆蓋）
+bool saveFrecencyHistory(const vector<Record>& records) {
+    string hist = historyPath();
+    if (hist.empty()) return false;
+
+    // 暫存檔名帶 pid，避免多個 shell 同時寫入時互相踩到
+    string tmp = hist + ".tmp." + to_string(getpid());
+    {
+        ofstream out(tmp, ios::trunc);
+        if (!out) return false;
+        for (const auto& r : records) {
+            out << r.path << "|" << r.score << "|" << r.timestamp << "\n";
+        }
+        out.flush();
+        if (!out) {
+            error_code ec;
+            fs::remove(tmp, ec);
+            return false;
+        }
+    }
+
+    error_code ec;
+    fs::rename(tmp, hist, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        return false;
+    }
+    return true;
+}
+
+// 6. 更新分數、老化衰減、寫回檔案
 void addOrUpdateHistory(const string& path) {
     auto records = loadFrecencyHistory();
     bool found = false;
     long long now = getCurrentTime();
 
-    // 命中加 10 分，並更新時間
+    // 全體先老化衰減 5%
+    for (auto& r : records) r.score *= 0.95;
+
+    // 命中的目標加上完整的 10 分
     for (auto& r : records) {
         if (r.path == path) {
             r.score += 10.0;
@@ -124,21 +175,12 @@ void addOrUpdateHistory(const string& path) {
             break;
         }
     }
-    // 新目錄給 10 分初始分數
-    if (!found) {
-        records.push_back({path, 10.0, now});
-    }
+    if (!found) records.push_back({path, 10.0, now});
 
-    const char* home_dir = getenv("HOME");
-    ofstream out(string(home_dir) + "/.warp_history", ios::trunc);
+    // 分數過低的紀錄直接淘汰
+    records.erase(remove_if(records.begin(), records.end(),
+                            [](const Record& r) { return r.score < 1.0; }),
+                  records.end());
 
-    for (auto& r : records) {
-        // 【核心邏輯】：所有人分數衰減 5% (模擬老化)
-        r.score *= 0.95;
-
-        // 【核心邏輯】：分數低於 1 的直接淘汰，解決檔案無限膨脹與快取污染
-        if (r.score >= 1.0) {
-            out << r.path << "|" << r.score << "|" << r.timestamp << "\n";
-        }
-    }
+    saveFrecencyHistory(records);
 }
